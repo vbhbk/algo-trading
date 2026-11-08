@@ -84,6 +84,9 @@ LONG_MODELS = {
 PASSIVE_MAX_SPREAD = 99   # mm: no resting quotes while spread > this
 TOX_L = 1e9               # mm: new quote on side s only if s * long_pred >= -TOX_L (2 s model as toxicity filter)
 TOX_L_CANCEL = 1e9        # mm: cancel a resting quote when s * long_pred < -TOX_L_CANCEL
+SZ_BAND = 100000          # mm: a passive fill may move inventory at most SZ_BAND past the target (size from model)
+SZ_SHRINK = 0             # mm: 1 = shrink resting quotes (modify keeps priority) when the band tightens
+THIN_Q = 0                # mm: no resting quote at the touch while the market size at that level < THIN_Q
 KEEP_TICKS = 0            # mm: keep resting quotes up to this many ticks behind the touch (queue priority)
 KEEP_SIZE = 1000          # mm: shrink a kept (behind-touch) quote to at most this size (modify keeps priority)
 PULL_EDGE = 0.1      # session 3: cancel a resting quote when model edge < PULL_EDGE (v4: 0.0)
@@ -573,6 +576,12 @@ class CannonMM(BaseStrategy):
         self.take_id = self.send_order(OrderRequest(side=side, price=dm.ask if sign > 0 else dm.bid,
                                                     quantity=TAKE_LOTS, order_type=OrderType.IOC))
 
+    def band(self, sign: int) -> int:
+        post = self.target + sign * SZ_BAND
+        post = POSITION_CAP if post > POSITION_CAP else -POSITION_CAP if post < -POSITION_CAP else post
+        b = sign * (post - self.position)
+        return b if b > 0 else 0
+
     def free_room(self, side: Side, sign: int) -> int:
         """Lots we may still add on `side`: cap minus inventory minus every order of ours that could still fill
         on that side (resting, in flight, cancel-pending, modify-pending at its old size, IOC trim)."""
@@ -763,6 +772,15 @@ class CannonMM(BaseStrategy):
                 deep = o.price > ask
             if ask - bid > PASSIVE_MAX_SPREAD or (1 if buy else -1) * self.pl < -TOX_L_CANCEL:
                 stale = True
+            if THIN_Q and not stale and o.price == (bid if buy else ask):
+                lq = 0
+                for v in (snapshot.bids if buy else snapshot.asks):
+                    if v.price != o.price:
+                        break
+                    if v.owner == 'market':
+                        lq += v.quantity
+                if lq < THIN_Q:
+                    stale = True
             if deep and not stale and o.rem > KEEP_SIZE and not o.modify_pending:
                 o.modify_pending = True
                 self.modify_order(oid, KEEP_SIZE)
@@ -777,6 +795,8 @@ class CannonMM(BaseStrategy):
         if SHRINK_EXCESS and bid is not None and ask is not None:
             for side, sign in ((Side.BUY, 1), (Side.SELL, -1)):
                 room = self._room(sign)
+                if SZ_SHRINK:
+                    room = min(room, self.band(sign))
                 live = [(oid, o) for oid, o in self.orders.items()
                         if o.side == side and o.accepted_us is not None and not o.cancel_pending and not o.modify_pending]
                 excess = sum(o.rem for _, o in live) - max(room, 0)
@@ -807,7 +827,7 @@ class CannonMM(BaseStrategy):
         cands = []
         for side, sign, price, levels in ((Side.BUY, 1, bid, snapshot.bids), (Side.SELL, -1, ask, snapshot.asks)):
             mine = [o for o in active if o.side == side and (o.price == price or o.accepted_us is None or o.cancel_pending)]
-            room = self._room(sign)
+            room = min(self._room(sign), self.band(sign))
             edge = sign * (fair - price)
             if mine:
                 if not TOPUP or any(o.cancel_pending or o.accepted_us is None or o.price != price for o in mine):
@@ -821,6 +841,8 @@ class CannonMM(BaseStrategy):
             if not TWO_SIDED and active_sides:
                 continue
             queue = sum(o.quantity for o in levels if o.owner == 'market' and o.price == price)
+            if queue < THIN_Q:
+                continue
             qty = min(self.research_lots(), room, self.free_room(side, sign))
             if KEEP_TICKS:
                 qty = min(qty, room - sum(o.rem for o in active if o.side == side))
