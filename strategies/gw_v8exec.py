@@ -89,6 +89,11 @@ TAKE_BLEND = 0.0       # take signal = (1-B) * p0.25 + B * p0.5 (ridge 0.5 s, fi
 THROUGH_Z = 1e9        # |signal| >= THROUGH_Z -> price the take IOC THROUGH_TICKS beyond the touch
 THROUGH_TICKS = 1
 SIZE_FULL_Z = 0.0      # > 0: take size = TAKE_LOTS * min(1, |signal| / SIZE_FULL_Z)
+EXIT_Z = 0.8           # unwind threshold once the hold expired (UNWIND_Z otherwise)
+EXIT_TICKS = 0         # > 0: after a take, rest a passive exit LIMIT EXIT_TICKS beyond the take price
+EXIT_FRAC = 1.0        # share of the take's fill put on the exit order
+EXIT_TTL_US = 3_000_000
+MAKER_CAP = 95         # passive quotes may move the position at most to +-MAKER_CAP (takes still go to 95)
 HOLD_US = 0            # > 0: target forced to 0 once HOLD_US passed since the last take (passive exit via skew)
 MODEL_05 = (-0.0024703699138938287, (0.02358688813985808, -0.02820099392440792, -0.0056743795851622175, 0.01563764217463773, -0.0019193354626532912, 1.2393639507820633, -0.45709321624820626, 0.6546831649102781, -0.20507605576526258, -0.02656970844379486, 0.23091596977866846, -0.03089731520715777, -0.0030027934248067017, -4.010471265524332e-05, 0.03151429648605883, 0.017366046043304315, -0.018119345657766423, -0.07845721552591961, 0.05253869558662455, -2.259117130238863e-05, 0.0, -0.1569144309187313, 0.04606821251074546, 0.8522781088448615, -0.5778579642657877, 0.6172753014788009, 0.016132999726516373, -0.027149529803769154, -0.11019504910251605, 0.0791820809896692, 0.03890771054026226, 0.195703813975891, -0.07845721552593576))
 PULL_EDGE = 0.1      # session 3: cancel a resting quote when model edge < PULL_EDGE (v4: 0.0)
@@ -391,6 +396,7 @@ class _Ord:
     def __init__(self, side: Side, price: int, qty: int) -> None:
         self.side, self.price, self.rem = side, price, qty
         self.accepted_us: int | None = None
+        self.exit = False
         self.cancel_pending = False
         self.modify_pending = False
 
@@ -423,6 +429,7 @@ class Round2MLMaker(BaseStrategy):
         self.take_sign = 0
         self.take_q = 0
         self.take_us = -10 ** 15
+        self.exit_pend = None
         self.last_take_us = -10 ** 15
         self.reserve_sign = 0
         self.guard_live = set()
@@ -547,6 +554,11 @@ class Round2MLMaker(BaseStrategy):
     def _room(self, sign: int) -> int:
         """Position room on a side; an in-flight unwind IOC on the same side counts as already filled."""
         room = POSITION_CAP - sign * self.position
+        if self.exit_pend is not None and self.exit_pend[0] == (Side.BUY if sign > 0 else Side.SELL):
+            room -= self.exit_pend[2]
+        for o in self.orders.values():
+            if o.exit and (1 if o.side == Side.BUY else -1) == sign:
+                room -= o.rem
         if self.unwind_id is not None and (1 if self.unwind_side == Side.BUY else -1) == sign:
             room -= self.unwind_q
         if self.take_id is not None and self.take_sign == sign:
@@ -599,7 +611,31 @@ class Round2MLMaker(BaseStrategy):
             price = dm.ask if sign > 0 else dm.bid
         self.take_sign, self.take_q, self.take_us = sign, q, now
         self.last_take_us = now
+        self.take_px, self.take_filled = (dm.ask if sign > 0 else dm.bid), 0
         self.take_id = self.send_order(OrderRequest(side=side, price=price, quantity=q, order_type=OrderType.IOC))
+
+    def place_exit(self) -> None:
+        """Queue a passive exit for the take just done; maker orders on that side are shrunk to make room first."""
+        sign = self.take_sign
+        q = min(int(self.take_filled * EXIT_FRAC), sign * self.position)
+        if q <= 0:
+            return
+        self.exit_pend = (Side.SELL if sign > 0 else Side.BUY, self.take_px + sign * EXIT_TICKS, q, self.dm.us + EXIT_TTL_US)
+
+    def try_exit(self, now: int) -> None:
+        side, price, q, until = self.exit_pend
+        sign = 1 if side == Side.BUY else -1
+        q = min(q, -sign * self.position)
+        if now >= until or q <= 0:
+            self.exit_pend = None
+            return
+        if q > self.free_room(side, sign):
+            return
+        self.exit_pend = None
+        oid = self.send_order(OrderRequest(side=side, price=price, quantity=q, order_type=OrderType.LIMIT))
+        o = _Ord(side, price, q)
+        o.exit = True
+        self.orders[oid] = o
 
     def free_room(self, side: Side, sign: int) -> int:
         """Lots we may still add on `side`: cap minus inventory minus every order of ours that could still fill
@@ -652,6 +688,7 @@ class Round2MLMaker(BaseStrategy):
         self.model_on = dm.on
         pos = self.position
         now = snapshot.timestamp_us
+        uz = UNWIND_Z
         if TARGET_K and dm.on:
             dm.predict()
             b, w = LONG_MODELS[LONG_H]
@@ -662,6 +699,7 @@ class Round2MLMaker(BaseStrategy):
             self.target = TARGET_MAX if t > TARGET_MAX else -TARGET_MAX if t < -TARGET_MAX else t
             if HOLD_US and now - self.last_take_us >= HOLD_US:
                 self.target = 0
+                uz = EXIT_Z
         dev = pos - self.target
         if dev and dm.on and self.unwind_id is None and self.trim_id is None and now - self.unwind_us >= UNWIND_COOLDOWN_US:
             z = (1 if dev > 0 else -1) * dm.predict()
@@ -672,7 +710,7 @@ class Round2MLMaker(BaseStrategy):
             else:
                 q = min(abs(dev), UNWIND_LOTS, POSITION_CAP - s * pos - sum(o.rem for o in self.orders.values() if o.side == side)
                         - (self.take_q if self.take_id is not None and self.take_sign == s else 0))
-            if z < -UNWIND_Z and q > 0:
+            if z < -uz and q > 0:
                 self.unwind_side = side
                 self.unwind_us = now
                 self.unwind_id = self.send_order(OrderRequest(side=side, price=dm.bid if dev > 0 else dm.ask,
@@ -778,6 +816,10 @@ class Round2MLMaker(BaseStrategy):
         for oid, o in self.orders.items():
             if o.accepted_us is None or o.cancel_pending:
                 continue
+            if o.exit:
+                if now - o.accepted_us >= EXIT_TTL_US:
+                    self._cancel(oid, o)
+                continue
             if bid is None or ask is None:
                 self._cancel(oid, o)
                 continue
@@ -798,9 +840,9 @@ class Round2MLMaker(BaseStrategy):
 
         if SHRINK_EXCESS and bid is not None and ask is not None:
             for side, sign in ((Side.BUY, 1), (Side.SELL, -1)):
-                room = self._room(sign)
+                room = min(self._room(sign), MAKER_CAP - sign * self.position)
                 live = [(oid, o) for oid, o in self.orders.items()
-                        if o.side == side and o.accepted_us is not None and not o.cancel_pending and not o.modify_pending]
+                        if not o.exit and o.side == side and o.accepted_us is not None and not o.cancel_pending and not o.modify_pending]
                 excess = sum(o.rem for _, o in live) - max(room, 0)
                 for oid, o in reversed(live):
                     if excess <= 0:
@@ -813,9 +855,11 @@ class Round2MLMaker(BaseStrategy):
                         self.modify_order(oid, o.rem - cut)
                     excess -= cut
 
+        if self.exit_pend is not None:
+            self.try_exit(now)
         if now < self.next_quote_us or bid is None or ask is None or ask <= bid:
             return
-        active = [o for o in self.orders.values() if not (FAST_REPLACE and o.cancel_pending)]
+        active = [o for o in self.orders.values() if not o.exit and not (FAST_REPLACE and o.cancel_pending)]
         if active and not TWO_SIDED and not TOPUP:
             return
         if active and not TWO_SIDED and TOPUP:
@@ -829,7 +873,7 @@ class Round2MLMaker(BaseStrategy):
         cands = []
         for side, sign, price, levels in ((Side.BUY, 1, bid, snapshot.bids), (Side.SELL, -1, ask, snapshot.asks)):
             mine = [o for o in active if o.side == side]
-            room = self._room(sign)
+            room = min(self._room(sign), MAKER_CAP - sign * self.position)
             edge = sign * (fair - price)
             if mine:
                 if not TOPUP or any(o.cancel_pending or o.accepted_us is None or o.price != price for o in mine):
@@ -872,9 +916,12 @@ class Round2MLMaker(BaseStrategy):
             if event.status in (OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED):
                 self.position += self.take_sign * event.filled_quantity
                 self.take_q -= event.filled_quantity
+                self.take_filled += event.filled_quantity
             if event.status in DONE:
                 self.take_id = None
                 self.take_q = 0
+                if EXIT_TICKS and self.take_filled:
+                    self.place_exit()
             return
         if event.order_id == self.unwind_id:
             if event.status in (OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED):

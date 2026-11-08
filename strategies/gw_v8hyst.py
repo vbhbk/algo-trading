@@ -90,6 +90,7 @@ TGT_TAU_US = 0         # EMA smoothing of the signal (0 = none)
 ENTER = 0.75           # hyst: go +-TARGET_MAX when s crosses +-ENTER, else keep the previous target
 WEAK = 0.0             # hyst: |s| < WEAK for WEAK_US -> target 0 (WEAK 0 = off)
 WEAK_US = 2_000_000
+UNWIND_Z0 = 0.8         # unwind IOC threshold while the target is 0 (UNWIND_Z when the target is +-TARGET_MAX)
 MID_MODELS = {0.5: (-0.0024703699138938287, (0.02358688813985808, -0.02820099392440792, -0.0056743795851622175, 0.01563764217463773, -0.0019193354626532912, 1.2393639507820633, -0.45709321624820626, 0.6546831649102781, -0.20507605576526258, -0.02656970844379486, 0.23091596977866846, -0.03089731520715777, -0.0030027934248067017, -4.010471265524332e-05, 0.03151429648605883, 0.017366046043304315, -0.018119345657766423, -0.07845721552591961, 0.05253869558662455, -2.259117130238863e-05, 0.0, -0.1569144309187313, 0.04606821251074546, 0.8522781088448615, -0.5778579642657877, 0.6172753014788009, 0.016132999726516373, -0.027149529803769154, -0.11019504910251605, 0.0791820809896692, 0.03890771054026226, 0.195703813975891, -0.07845721552593576))}
 PULL_EDGE = 0.1      # session 3: cancel a resting quote when model edge < PULL_EDGE (v4: 0.0)
 DONE = (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED)
@@ -680,7 +681,7 @@ class Round2MLMaker(BaseStrategy):
             else:
                 q = min(abs(dev), UNWIND_LOTS, POSITION_CAP - s * pos - sum(o.rem for o in self.orders.values() if o.side == side)
                         - (self.take_q if self.take_id is not None and self.take_sign == s else 0))
-            if z < -UNWIND_Z and q > 0:
+            if z < -(UNWIND_Z if self.target else UNWIND_Z0) and q > 0:
                 self.unwind_side = side
                 self.unwind_us = now
                 self.unwind_id = self.send_order(OrderRequest(side=side, price=dm.bid if dev > 0 else dm.ask,

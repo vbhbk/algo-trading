@@ -6,20 +6,26 @@ from simulator.models import OrderRequest, OrderStatus, OrderType, Side
 from simulator.strategy import BaseStrategy
 
 CAP = 95
-TAKE_Z = 0.6
+TAKE_Z = 1.35
 TAKE_MAX = 190
 TAKE_COOLDOWN_US = 20000
 HOLD_US = 1000000
-EXIT_EDGE = 0.0
-EXIT_EDGE_HOLD = -1.0
-HOLD_Z = 0.6
-UNWIND_Z = 0.6
+EXIT_Z = -0.3
+EXIT_Z_HOLD = -0.3
+EXIT_IOC = False
+HOLD_Z = 0.9
+UNWIND_Z = 1.35
 UNWIND_COOLDOWN_US = 50000
 TARGET_K = 0.0
 TARGET_MAX = 95
 EXIT_SPREAD_MAX = 2
 GUARD_SPREAD = 3
 MIN_EXIT = 1
+SLIP = 0
+A50 = 0.0
+A1 = 1.0
+M50 = (-0.0024703699138938287, (0.02358688813985808, -0.02820099392440792, -0.0056743795851622175, 0.01563764217463773, -0.0019193354626532912, 1.2393639507820633, -0.45709321624820626, 0.6546831649102781, -0.20507605576526258, -0.02656970844379486, 0.23091596977866846, -0.03089731520715777, -0.0030027934248067017, -4.010471265524332e-05, 0.03151429648605883, 0.017366046043304315, -0.018119345657766423, -0.07845721552591961, 0.05253869558662455, -2.259117130238863e-05, 0.0, -0.1569144309187313, 0.04606821251074546, 0.8522781088448615, -0.5778579642657877, 0.6172753014788009, 0.016132999726516373, -0.027149529803769154, -0.11019504910251605, 0.0791820809896692, 0.03890771054026226, 0.195703813975891, -0.07845721552593576))
+M1 = (0.2670664089595442, (0.017207794094542275, -0.006444297901719564, -0.038045466395670406, 0.017047780547538947, 0.009747420423257944, 1.483113102434562, -0.9809116698806084, 1.436138514194375, -0.40789360041409645, -0.07705199887859639, 0.3540742197824494, -0.04603170808585386, -0.0036074627857007988, -0.001295238879664854, 0.01780942511738238, -0.02450982607322758, -0.03934798400609231, -0.14761502760246706, -0.03572375269492531, -0.0064589417947459125, 0.0, -0.2952300549157454, 0.10493296794774032, 1.1105363316426629, -1.2346790990265422, 1.0153727622085087, 0.01921755557157719, -0.027300338552214552, -0.1795425749810896, 0.1566345236575264, 0.05004872046342075, 0.5341510200703529, -0.14761502760244063))
 M2 = (0.3850357354018952, (0.03895320456337004, -0.12108177059692553, 0.03884525063869162, -0.012986207230560456, 0.04045525993631779, 1.9249457253694604, -1.5617917120354952, 2.4799818297131972, -0.884417854054501, -0.12733488399209955, 0.4576954350548732, -0.059368449185205396, -0.007844792328498398, -0.00447636793827065, -0.021741075986518765, -0.08432520772277531, -0.08944581250574046, -0.24510169486327413, 0.10372845323403519, -0.02285627109228567, 0.0, -0.49020338939768504, 0.023197686495767592, 1.2697851195195011, -2.156388492548109, 2.2129769010356855, 0.026306723383299473, -0.03761825119784457, -0.17512859881585646, 0.0795318051699145, 0.058755336620885674, 1.2002330516565918, -0.24510169486337402))
 
 
@@ -351,10 +357,10 @@ class GwScalp(BaseStrategy):
                 o.cxl = True
                 self.cancel_order(oid)
 
-    def ioc(self, sg, q, now):
+    def ioc(self, sg, q, now, slip=0):
         dm = self.dm
         side = Side.BUY if sg > 0 else Side.SELL
-        px = dm.ask if sg > 0 else dm.bid
+        px = dm.ask + slip if sg > 0 else dm.bid - slip
         oid = self.send_order(OrderRequest(side=side, price=px, quantity=q, order_type=OrderType.IOC))
         self.orders[oid] = _O(side, px, q, True)
         self.ioc_us = now
@@ -376,6 +382,14 @@ class GwScalp(BaseStrategy):
             return
         now = snapshot.timestamp_us
         p = dm.predict() if dm.on else 0.0
+        if dm.on and (A50 or A1):
+            x = dm.x
+            for a, (b, w) in ((A50, M50), (A1, M1)):
+                if a:
+                    q = b
+                    for wi, v in zip(w, x):
+                        q += wi * v
+                    p += a * q
         spread = dm.ask - dm.bid
         has_ioc = False
         for o in self.orders.values():
@@ -395,7 +409,7 @@ class GwScalp(BaseStrategy):
                 self.cancel_side(sg)
             q = min(TAKE_MAX, room)
             if q > 0:
-                self.ioc(sg, q, now)
+                self.ioc(sg, q, now, SLIP)
                 return
         if pos == 0:
             for oid, o in self.orders.items():
@@ -421,12 +435,24 @@ class GwScalp(BaseStrategy):
         want = None
         if want_q >= MIN_EXIT and spread <= EXIT_SPREAD_MAX and spread < GUARD_SPREAD:
             px = dm.ask if sp > 0 else dm.bid
-            edge = -sp * (dm.mid + p - px)
-            thr = EXIT_EDGE if now - self.entry_us < HOLD_US else EXIT_EDGE_HOLD
-            if edge >= thr:
+            thr = EXIT_Z if now - self.entry_us < HOLD_US else EXIT_Z_HOLD
+            if z <= thr:
                 want = px
+        if want is not None and EXIT_IOC:
+            if dm.on and not has_ioc and now - self.unw_us >= UNWIND_COOLDOWN_US:
+                self.cancel_side(-sp)
+                q = min(want_q, CAP - self.exposure(-sp))
+                if q > 0:
+                    self.ioc(-sp, q, now)
+                    self.unw_us = now
+            return
+        keep = None
+        if want is None and want_q >= MIN_EXIT and spread <= EXIT_SPREAD_MAX and spread < GUARD_SPREAD and z < HOLD_Z:
+            keep = dm.ask if sp > 0 else dm.bid   # hysteresis: a resting exit survives until z >= HOLD_Z
         for oid, o in self.orders.items():
             if o.ioc or o.cxl:
+                continue
+            if keep is not None and o.sign == -sp and o.price == keep and o.rem <= want_q:
                 continue
             if o.sign == sp or want is None or o.price != want or o.rem > want_q:
                 o.cxl = True
