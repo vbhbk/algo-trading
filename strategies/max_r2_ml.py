@@ -57,6 +57,13 @@ BG_DEPTH = 1700
 BG_FLOW = 2000
 BG_PAUSE_US = 2_000_000
 DIR_PULL_EDGE = 0.1  # cancel a resting quote when model edge < this (ticks; -1e9 = off)
+LONG_MODELS = {
+    2: (-0.26409297651748986, (0.0037833597068991686, 0.013318170510522961, -0.01319392793412371, 0.010012225994530713, -0.008516519750986646, 0.46156924757054907, 0.7727867709119808, -0.7552841949831351, 0.38620938461858906, -0.0858610018646063, 0.004957705466256682, -0.038382834111665876, 0.01464606532029972, -0.002850214242952998, -0.021506027334455554, -0.01154295056898574, -0.006868313133912927, -0.08853730497668162, -0.14977271379646742, -0.008019961731132385, 0.0, -0.17707460947166467, 0.03315888798277759, 0.5934396377254009, 0.625419310880617, -0.16232115445529957, 0.01491845713683707, -0.015592889985454215, -0.08491988001857756, 0.1173831383550474, 0.016228539559363767, -0.12027884153530673, -0.08853730497671063)),
+}
+LONG_H = 2  # long-horizon ridge (s), weights from strategy_v8, fit on the first 60% of round2_public_train
+LONG_K = 200.0  # target inventory = clip(LONG_K * long prediction, +-MAX_POS) (0 = off)
+LONG_UNWIND = 1  # 1: the unwind IOC steers inventory to the target instead of 0
+LONG_LIMIT = 0  # 1: the side moving inventory away from the target quotes at most DIR_CARRY_SLACK lots
 DIR_CARRY = 0.0  # target inventory = DIR_CARRY * prediction (lots per tick, 0 = off)
 DIR_CARRY_SLACK = 0  # extra lots the side moving away from the target may still quote
 MOD_IMB_TH = -0.92  # side_sign * imb_L1 <= this -> side capped at flattening size via modify (<= -1 = off)
@@ -370,6 +377,7 @@ class MaxR2Ml(BaseStrategy):
         self.dm = DirectionModel()
         self.iocs: dict[str, list] = {}  # id -> [sign, remaining]
         self.take_us = -(10**18)
+        self.target = 0
         self.bg_flow: deque = deque()
         self.bg_sum = 0
         self.bg_until = -1
@@ -473,6 +481,16 @@ class MaxR2Ml(BaseStrategy):
     def on_order_book_change(self, snapshot: OrderBookSnapshot, trades: list[Trade]) -> None:
         if DIR_ON:
             self.dm.update(snapshot, trades)
+            if LONG_K and self.dm.on:
+                self.dm.predict()
+                b, w = LONG_MODELS[LONG_H]
+                pl = b
+                for wi, v in zip(w, self.dm.x):
+                    pl += wi * v
+                t = int(round(LONG_K * pl))
+                self.target = MAX_POS if t > MAX_POS else -MAX_POS if t < -MAX_POS else t
+            elif LONG_K:
+                self.target = 0
         bid = next((o.price for o in snapshot.bids if o.owner == 'market'), None)
         ask = next((o.price for o in snapshot.asks if o.owner == 'market'), None)
         if bid is None or ask is None:
@@ -562,8 +580,8 @@ class MaxR2Ml(BaseStrategy):
                 keep_sell = max(0, inv) + MOD_CAP_INC
                 sell_size = min(sell_size, keep_sell)
 
-        if DIR_ON and DIR_CARRY and self.dm.on:
-            tgt = max(-MAX_POS, min(MAX_POS, DIR_CARRY * self.dm.predict()))
+        if DIR_ON and ((DIR_CARRY and self.dm.on) or (LONG_K and LONG_LIMIT)):
+            tgt = self.target if LONG_K and LONG_LIMIT else max(-MAX_POS, min(MAX_POS, DIR_CARRY * self.dm.predict()))
             if tgt > 0:
                 lim = max(0, int(inv - tgt)) + DIR_CARRY_SLACK
                 keep_sell = min(keep_sell, lim)
@@ -591,13 +609,14 @@ class MaxR2Ml(BaseStrategy):
 
         if DIR_ON and self.dm.on and not self.iocs:
             now = snapshot.timestamp_us
-            if inv and DIR_UNWIND_Z < 1e9 and now - self.unwind_us >= DIR_UNWIND_CD_US:
-                sg = 1 if inv > 0 else -1
+            dev = inv - (self.target if LONG_K and LONG_UNWIND else 0)
+            if dev and DIR_UNWIND_Z < 1e9 and now - self.unwind_us >= DIR_UNWIND_CD_US:
+                sg = 1 if dev > 0 else -1
                 if sg * self.dm.predict() < -DIR_UNWIND_Z:
-                    side_r = Side.SELL if inv > 0 else Side.BUY
-                    q = min(abs(inv), DIR_UNWIND_LOTS, MAX_POS + abs(inv) - self._resting(side_r) - self._ioc_pending(-sg))
+                    side_r = Side.SELL if dev > 0 else Side.BUY
+                    q = min(abs(dev), DIR_UNWIND_LOTS, MAX_POS + sg * inv - self._resting(side_r) - self._ioc_pending(-sg))
                     if q > 0:
-                        self._ioc(-sg, self.dm.bid if inv > 0 else self.dm.ask, q)
+                        self._ioc(-sg, self.dm.bid if dev > 0 else self.dm.ask, q)
                         self.unwind_us = now
             if take_sign and not self.iocs and now - self.take_us >= DIR_TAKE_CD_US:
                 side_t = Side.BUY if take_sign > 0 else Side.SELL
