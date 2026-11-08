@@ -84,6 +84,8 @@ LONG_MODELS = {
 IMP_K = 0.3          # target lots per unit of impulse score (lots of weighted aggressive volume)
 IMP_TH = 1e9         # |score| above which the target is forced to +-TARGET_MAX
 IMP_TAU_US = 500_000
+IMP_FLIP = 1e9       # |score| above which the gap to target is crossed by IOC even without the short-model signal
+PL_K = 1.0           # weight of the ridge part of the target (0 = impulse score only)
 IMP_SPW = 2.0
 IMP_RELBAD = 0.3
 IMP_R0 = 1.25
@@ -637,8 +639,9 @@ class Round2MLMaker(BaseStrategy):
             elif sc < -IMP_TH:
                 t = -TARGET_MAX
             else:
-                t = int(round(TARGET_K * pl + IMP_K * sc))
+                t = int(round(PL_K * TARGET_K * pl + IMP_K * sc))
             self.target = TARGET_MAX if t > TARGET_MAX else -TARGET_MAX if t < -TARGET_MAX else t
+        sc = self.imp_score * exp(-(now - self.imp_us) / IMP_TAU_US)
         dev = pos - self.target
         if dev and dm.on and self.unwind_id is None and self.trim_id is None and now - self.unwind_us >= UNWIND_COOLDOWN_US:
             z = (1 if dev > 0 else -1) * dm.predict()
@@ -649,7 +652,7 @@ class Round2MLMaker(BaseStrategy):
             else:
                 q = min(abs(dev), UNWIND_LOTS, POSITION_CAP - s * pos - sum(o.rem for o in self.orders.values() if o.side == side)
                         - (self.take_q if self.take_id is not None and self.take_sign == s else 0))
-            if z < -UNWIND_Z and q > 0:
+            if (z < -UNWIND_Z or (dev > 0 and sc < -IMP_FLIP) or (dev < 0 and sc > IMP_FLIP)) and q > 0:
                 self.unwind_side = side
                 self.unwind_us = now
                 self.unwind_id = self.send_order(OrderRequest(side=side, price=dm.bid if dev > 0 else dm.ask,
