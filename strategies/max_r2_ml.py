@@ -64,6 +64,10 @@ LONG_H = 2  # long-horizon ridge (s), weights from strategy_v8, fit on the first
 LONG_K = 200.0  # target inventory = clip(LONG_K * long prediction, +-MAX_POS) (0 = off)
 LONG_UNWIND = 1  # 1: the unwind IOC steers inventory to the target instead of 0
 LONG_LIMIT = 0  # 1: the side moving inventory away from the target quotes at most DIR_CARRY_SLACK lots
+JUMP_TH = 1e9  # |mid move| over 1 s that starts riding the jump (ticks; 1e9 = off)
+JUMP_HOLD_US = 20_000_000  # max ride time
+JUMP_STOP = 10  # exit when the price retraces this many ticks from the ride's best
+JUMP_SLIP = 3  # IOC price this many ticks through the touch
 DIR_CARRY = 0.0  # target inventory = DIR_CARRY * prediction (lots per tick, 0 = off)
 DIR_CARRY_SLACK = 0  # extra lots the side moving away from the target may still quote
 MOD_IMB_TH = -0.92  # side_sign * imb_L1 <= this -> side capped at flattening size via modify (<= -1 = off)
@@ -378,6 +382,10 @@ class MaxR2Ml(BaseStrategy):
         self.iocs: dict[str, list] = {}  # id -> [sign, remaining]
         self.take_us = -(10**18)
         self.target = 0
+        self.jmids: deque = deque()
+        self.jdir = 0
+        self.jend = 0
+        self.jbest = 0.0
         self.bg_flow: deque = deque()
         self.bg_sum = 0
         self.bg_until = -1
@@ -500,6 +508,24 @@ class MaxR2Ml(BaseStrategy):
 
         spread = ask - bid
         inv = self.inventory
+        if JUMP_TH < 1e9:
+            now_j = snapshot.timestamp_us
+            mj = 0.5 * (bid + ask)
+            jm = self.jmids
+            jm.append((now_j, mj))
+            while now_j - jm[0][0] > 1_000_000:
+                jm.popleft()
+            if self.jdir == 0:
+                mv = mj - jm[0][1]
+                if abs(mv) >= JUMP_TH:
+                    self.jdir = 1 if mv > 0 else -1
+                    self.jend = now_j + JUMP_HOLD_US
+                    self.jbest = mj
+            elif abs(self.jdir) == 1:
+                if self.jdir * (mj - self.jbest) > 0:
+                    self.jbest = mj
+                if now_j > self.jend or self.jdir * (self.jbest - mj) >= JUMP_STOP:
+                    self.jdir *= 2
         if VOL_TH < 1e9:
             now = snapshot.timestamp_us
             m = 0.5 * (bid + ask)
@@ -590,6 +616,32 @@ class MaxR2Ml(BaseStrategy):
                 lim = max(0, int(tgt - inv)) + DIR_CARRY_SLACK
                 keep_buy = min(keep_buy, lim)
                 buy_size = min(buy_size, lim)
+        if JUMP_TH < 1e9 and self.jdir:
+            jd = self.jdir
+            if abs(jd) == 1:
+                if jd > 0:
+                    keep_sell = 0
+                    sell_size = 0
+                else:
+                    keep_buy = 0
+                    buy_size = 0
+                if not self.iocs:
+                    side_j = Side.BUY if jd > 0 else Side.SELL
+                    free = MAX_POS - jd * inv - self._resting(side_j) - self._ioc_pending(jd)
+                    if free > 0:
+                        self._ioc(jd, ask + JUMP_SLIP if jd > 0 else bid - JUMP_SLIP, free)
+            else:
+                if inv == 0:
+                    self.jdir = 0
+                elif not self.iocs:
+                    sg = 1 if inv > 0 else -1
+                    side_r = Side.SELL if inv > 0 else Side.BUY
+                    q = min(abs(inv), MAX_POS + abs(inv) - self._resting(side_r) - self._ioc_pending(-sg))
+                    if q > 0:
+                        self._ioc(-sg, bid - JUMP_SLIP if inv > 0 else ask + JUMP_SLIP, q)
+            self._quote_side(Side.BUY, bid_px, buy_size, 0, keep_buy)
+            self._quote_side(Side.SELL, ask_px, sell_size, 0, keep_sell)
+            return
         take_sign = 0
         if DIR_ON and DIR_TAKE_Z < 1e9 and self.dm.on and abs(self.dm.predict()) >= DIR_TAKE_Z:
             take_sign = 1 if self.dm.pred > 0 else -1
