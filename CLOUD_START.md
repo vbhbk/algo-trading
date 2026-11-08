@@ -7,7 +7,8 @@
 3. В этом репозитории всё лежит здесь, а не в `../algo-trading/data` и не в `vladyslavzk/algo-trading`.
 
 Данные в `data/`: `sample`, `sample_v2` (+ `_a/_b`), `round1` (+ `_a/_b`), `round2_public` (+ `_a/_b`,
-`round2_public_train/valid`, `round2_t40`), `round3_public` (+ `_a/_b`, `round3_a2`).
+`round2_public_train/valid`, `round2_t40`), `round3_public` (+ `_a/_b`, `round3_a2`),
+`round4_public` (+ `_a/_b`; подрезки `round4_a1/a2`, `round4_b1/b2/b3`).
 
 Стратегии: `strategies/strategy_v8_r3.py` (`TAKE_LOTS = 45`: round3_b 217 017; с `TAKE_LOTS = 95`: 224 864 — планка),
 `strategy_v8_r3f95.py` (то же, обучено на всём R3, для загрузки), `strategy_v8.py`, `strategy_v5.py`, `max_r3_ml.py`,
