@@ -1,5 +1,5 @@
 import numpy as np, sys
-for r in ['round1','round2_public','round3_public']:
+for r in ['round3_public','round4_public']:
     d=np.load(f'logs/cannon/rec_{r}.npz'); E=d['E']; T=d['T']
     t=E[:,0]/1e6; bid=E[:,1]; ask=E[:,2]; ok=(bid>0)&(ask>bid)
     t=t[ok]; mid=(bid[ok]+ask[ok])/2; sp=(ask-bid)[ok]

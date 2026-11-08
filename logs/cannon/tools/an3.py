@@ -1,5 +1,5 @@
 import numpy as np, sys; sys.path.insert(0,'logs/cannon/tools'); from load import load
-for r in ['round2_public','round3_public']:
+for r in ['round3_public','round4_public']:
     E,T,ok=load(r)
     t=E[:,0]; bid=E[:,1]; ask=E[:,2]; bq=E[:,3]; aq=E[:,4]
     sp=ask-bid
