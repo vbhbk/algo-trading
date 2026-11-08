@@ -44,13 +44,21 @@ FAST_TH = 6  # |mid move| in ticks over 1 s that also triggers the guard (1000 =
 DIR_ON = 1  # 1: compute the direction model on every event
 DIR_GATE_EDGE = 0.25  # new passive order only if model edge > this (ticks; -1e9 = off)
 DIR_TAKE_Z = 0.5  # |prediction| >= this -> IOC at the touch in the predicted direction (1e9 = off)
-DIR_TAKE_LOTS = 30
+DIR_TAKE_LOTS = 60
 DIR_TAKE_CD_US = 250_000
 DIR_TAKE_GUARD = 1  # 1: taking allowed while the volatility guard is on
 DIR_UNWIND_Z = 0.8  # sign(inv) * prediction < -this -> IOC on the reducing side (1e9 = off)
 DIR_UNWIND_LOTS = 95
 DIR_UNWIND_CD_US = 100_000
 PULL_EDGE = 0.1
+BG_ON = 0  # book guard: spread >= BG_SPREAD, depth within 5 ticks < BG_DEPTH or 1 s aggressive volume > BG_FLOW -> cap 0
+BG_SPREAD = 3
+BG_DEPTH = 1700
+BG_FLOW = 2000
+BG_PAUSE_US = 2_000_000
+DIR_PULL_EDGE = 0.1  # cancel a resting quote when model edge < this (ticks; -1e9 = off)
+DIR_CARRY = 0.0  # target inventory = DIR_CARRY * prediction (lots per tick, 0 = off)
+DIR_CARRY_SLACK = 0  # extra lots the side moving away from the target may still quote
 MOD_IMB_TH = -0.92  # side_sign * imb_L1 <= this -> side capped at flattening size via modify (<= -1 = off)
 MOD_CAP_INC = 0  # increasing exposure still allowed when triggered
 
@@ -362,6 +370,9 @@ class MaxR2Ml(BaseStrategy):
         self.dm = DirectionModel()
         self.iocs: dict[str, list] = {}  # id -> [sign, remaining]
         self.take_us = -(10**18)
+        self.bg_flow: deque = deque()
+        self.bg_sum = 0
+        self.bg_until = -1
         self.unwind_us = -(10**18)
 
     def _cancel(self, oid: str) -> None:
@@ -398,8 +409,12 @@ class MaxR2Ml(BaseStrategy):
         prices = {p for p, _ in want}
         kept: dict[int, list[str]] = {}
         deeper: list[str] = []
+        pull = DIR_PULL_EDGE > -1e9 and self.dm.on
         for oid in live:
             p = self.orders[oid][1]
+            if pull and (1 if side == Side.BUY else -1) * (self.dm.mid + self.dm.predict() - p) < DIR_PULL_EDGE:
+                self._cancel(oid)
+                continue
             if p in prices:
                 kept.setdefault(p, []).append(oid)
             elif KEEP_TICKS and want and 0 < (px - p if side == Side.BUY else p - px) <= KEEP_TICKS:
@@ -484,6 +499,32 @@ class MaxR2Ml(BaseStrategy):
                 if abs(m - fm[0][1]) >= FAST_TH:
                     self.guard_until = max(self.guard_until, now + VOL_HOLD_US)
             self.cap = VOL_POS if now < self.guard_until else MAX_POS
+        if BG_ON:
+            now_b = snapshot.timestamp_us
+            for t in trades:
+                if t.taker_owner == 'market':
+                    self.bg_flow.append((t.timestamp_us, t.quantity))
+                    self.bg_sum += t.quantity
+            while self.bg_flow and self.bg_flow[0][0] < now_b - 1_000_000:
+                self.bg_sum -= self.bg_flow.popleft()[1]
+            danger = spread >= BG_SPREAD or self.bg_sum > BG_FLOW
+            if not danger:
+                depth = 0
+                for o in snapshot.bids:
+                    if o.owner == 'market':
+                        if bid - o.price >= 5:
+                            break
+                        depth += o.quantity
+                for o in snapshot.asks:
+                    if o.owner == 'market':
+                        if o.price - ask >= 5:
+                            break
+                        depth += o.quantity
+                danger = depth < BG_DEPTH
+            if danger:
+                self.bg_until = now_b + BG_PAUSE_US
+            if now_b < self.bg_until:
+                self.cap = VOL_POS
         cap = self.cap
         tgt = 0.0
         x = 0.0
@@ -521,6 +562,16 @@ class MaxR2Ml(BaseStrategy):
                 keep_sell = max(0, inv) + MOD_CAP_INC
                 sell_size = min(sell_size, keep_sell)
 
+        if DIR_ON and DIR_CARRY and self.dm.on:
+            tgt = max(-MAX_POS, min(MAX_POS, DIR_CARRY * self.dm.predict()))
+            if tgt > 0:
+                lim = max(0, int(inv - tgt)) + DIR_CARRY_SLACK
+                keep_sell = min(keep_sell, lim)
+                sell_size = min(sell_size, lim)
+            elif tgt < 0:
+                lim = max(0, int(tgt - inv)) + DIR_CARRY_SLACK
+                keep_buy = min(keep_buy, lim)
+                buy_size = min(buy_size, lim)
         take_sign = 0
         if DIR_ON and DIR_TAKE_Z < 1e9 and self.dm.on and abs(self.dm.predict()) >= DIR_TAKE_Z:
             take_sign = 1 if self.dm.pred > 0 else -1
