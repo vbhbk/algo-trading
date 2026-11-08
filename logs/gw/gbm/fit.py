@@ -5,6 +5,8 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 TRAIN = [('round3_a', None), ('round2_public', 3000.0)]   # (file, keep t < limit s)
 if len(sys.argv) > 2 and sys.argv[2] == 'full':          # for site upload: all of R3 + all of R2
     TRAIN = [('round3_a', None), ('round3_b', None), ('round2_public', None)]
+if len(sys.argv) > 2 and sys.argv[2] == 'r4':            # all of R2 + R3 + round4_a (test on round4_b)
+    TRAIN = [('round3_a', None), ('round3_b', None), ('round2_public', None), ('round4_a', None)]
 OUT = sys.argv[1]
 def load(f, lim):
     d = np.load(f'logs/gw/feat/{f}.npz'); ok = ~np.isnan(d['bid'])
@@ -44,7 +46,7 @@ for H, key in [(0.25, 'p25'), (2.0, 'p2')]:
         if best is None or r > best[0]: best = (r, lam)
     res[key + '_ridge'] = ridge(X, y, best[1]); print(f'{key} ridge lam {best[1]} inner R2 {best[0]:.3f}')
     bestg = None
-    for it, leaves in [(100, 15), (200, 15), (150, 31)]:
+    for it, leaves in ([(100, 15)] if 'small' in sys.argv else [(100, 15), (200, 15), (150, 31)]):
         g = HistGradientBoostingRegressor(max_iter=it, learning_rate=0.08, max_leaf_nodes=leaves, min_samples_leaf=300,
                                           l2_regularization=1.0, early_stopping=False, random_state=0).fit(X[tr], y[tr])
         r = 1 - np.mean((y[~tr] - g.predict(X[~tr])) ** 2) / np.var(y[~tr]); print(f'  gbm it {it} leaves {leaves}: inner R2 {r:.3f}')
