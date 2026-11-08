@@ -564,7 +564,7 @@ class Round2MLMaker(BaseStrategy):
         if self.take_id is not None and self.take_sign == sign:
             room -= self.take_q
         elif self.reserve_sign == sign:
-            room -= TAKE_LOTS
+            room -= min(TAKE_LOTS, POSITION_CAP - sign * self.position)
         return room
 
     def take_signal(self) -> float:
@@ -598,6 +598,7 @@ class Round2MLMaker(BaseStrategy):
             want = max(TAKE_MIN, min(TAKE_LOTS, int(TAKE_LOTS * abs(p) / SIZE_FULL_Z)))
         pos_room = POSITION_CAP - sign * self.position
         free = pos_room - sum(o.rem for o in self.orders.values() if o.side == side)
+        want = min(want, pos_room)
         q = min(want, free)
         if free < want and pos_room >= TAKE_MIN:
             self.reserve_sign = sign     # shrink pass frees the room; a (further) IOC follows on a later event
