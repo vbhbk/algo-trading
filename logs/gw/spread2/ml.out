@@ -1,0 +1,49 @@
+n spread>1 events: train 331843, r3b 235362, r2h2 196832
+H=0.25 (gbm fit 19s, std y test r3b 1.91):
+   train: ridge R2 0.091 c 0.302 | gbm R2 0.432 c 0.704 | gap-only R2 0.001
+   r3b: ridge R2 0.090 c 0.301 | gbm R2 0.101 c 0.337 | gap-only R2 -0.001
+   r2h2: ridge R2 0.040 c 0.211 | gbm R2 0.037 c 0.237 | gap-only R2 0.002
+H=0.5 (gbm fit 19s, std y test r3b 3.04):
+   train: ridge R2 0.067 c 0.259 | gbm R2 0.491 c 0.771 | gap-only R2 0.000
+   r3b: ridge R2 0.053 c 0.235 | gbm R2 0.039 c 0.244 | gap-only R2 0.000
+   r2h2: ridge R2 -0.012 c 0.103 | gbm R2 -0.058 c 0.099 | gap-only R2 -0.001
+H=close (gbm fit 20s, std y test r3b 1.35):
+   train: ridge R2 0.063 c 0.251 | gbm R2 0.577 c 0.814 | gap-only R2 0.004
+   r3b: ridge R2 0.048 c 0.228 | gbm R2 0.028 c 0.223 | gap-only R2 0.008
+   r2h2: ridge R2 -0.001 c 0.098 | gbm R2 0.033 c 0.211 | gap-only R2 -0.001
+
+### IOC markouts (ticks/lot, entry = touch at t+5ms on the taking side; one take per 100 ms)
+ridge r3b   |p05|>=1.0: n  3730 (1.24/s) pred 1.62 cost(entry-mid) 1.32 markout 0.5s +0.512 1s +0.811 2s +1.362 (se2s 0.165) touchq med 397 spread@arr>1 0.72
+ridge r3b   |p05|>=1.5: n  1754 (0.59/s) pred 2.22 cost(entry-mid) 1.47 markout 0.5s +0.786 1s +1.167 2s +1.792 (se2s 0.223) touchq med 424 spread@arr>1 0.65
+ridge r3b   |p05|>=2.0: n   871 (0.29/s) pred 2.80 cost(entry-mid) 1.72 markout 0.5s +1.113 1s +1.676 2s +2.382 (se2s 0.305) touchq med 405 spread@arr>1 0.64
+ridge r3b   |p05|>=3.0: n   260 (0.09/s) pred 3.99 cost(entry-mid) 1.56 markout 0.5s +2.200 1s +2.615 2s +2.994 (se2s 0.496) touchq med 398 spread@arr>1 0.62
+ridge r2h2  |p05|>=1.0: n  3239 (1.08/s) pred 1.56 cost(entry-mid) 1.29 markout 0.5s -0.121 1s -0.300 2s -0.470 (se2s 0.224) touchq med 372 spread@arr>1 0.76
+ridge r2h2  |p05|>=1.5: n  1467 (0.49/s) pred 2.15 cost(entry-mid) 1.38 markout 0.5s -0.124 1s -0.664 2s -0.986 (se2s 0.384) touchq med 367 spread@arr>1 0.70
+ridge r2h2  |p05|>=2.0: n   708 (0.24/s) pred 2.72 cost(entry-mid) 1.38 markout 0.5s -0.221 1s -1.166 2s -1.702 (se2s 0.629) touchq med 382 spread@arr>1 0.67
+ridge r2h2  |p05|>=3.0: n   161 (0.05/s) pred 4.09 cost(entry-mid) 1.85 markout 0.5s -0.183 1s -0.435 2s -0.422 (se2s 1.018) touchq med 505 spread@arr>1 0.58
+gbm   r3b   |p05|>=1.0: n  4297 (1.43/s) pred 1.80 cost(entry-mid) 1.31 markout 0.5s +0.305 1s +0.658 2s +0.845 (se2s 0.201) touchq med 202 spread@arr>1 0.81
+gbm   r3b   |p05|>=1.5: n  2647 (0.88/s) pred 2.36 cost(entry-mid) 1.42 markout 0.5s +0.837 1s +1.249 2s +1.640 (se2s 0.276) touchq med 179 spread@arr>1 0.77
+gbm   r3b   |p05|>=2.0: n  1669 (0.56/s) pred 2.88 cost(entry-mid) 1.62 markout 0.5s +1.379 1s +2.008 2s +2.607 (se2s 0.380) touchq med 166 spread@arr>1 0.72
+gbm   r3b   |p05|>=3.0: n   692 (0.23/s) pred 3.82 cost(entry-mid) 2.01 markout 0.5s +1.874 1s +2.962 2s +4.171 (se2s 0.568) touchq med 178 spread@arr>1 0.69
+gbm   r2h2  |p05|>=1.0: n  3650 (1.22/s) pred 1.76 cost(entry-mid) 1.35 markout 0.5s -0.436 1s -0.344 2s -0.356 (se2s 0.247) touchq med 214 spread@arr>1 0.87
+gbm   r2h2  |p05|>=1.5: n  2325 (0.78/s) pred 2.28 cost(entry-mid) 1.44 markout 0.5s -0.283 1s -0.295 2s -0.338 (se2s 0.330) touchq med 211 spread@arr>1 0.84
+gbm   r2h2  |p05|>=2.0: n  1510 (0.50/s) pred 2.77 cost(entry-mid) 1.51 markout 0.5s -0.064 1s -0.103 2s -0.220 (se2s 0.441) touchq med 202 spread@arr>1 0.81
+gbm   r2h2  |p05|>=3.0: n   604 (0.20/s) pred 3.67 cost(entry-mid) 1.73 markout 0.5s +0.060 1s -0.272 2s -0.693 (se2s 0.723) touchq med 226 spread@arr>1 0.78
+
+### rule: IOC in gap direction at episode open (first spread>1 event)
+train round3_a spread=2: n 5555 cost 0.97 mk 0.5s -0.126 1s +0.109 2s +0.366
+train round3_a spread=3: n 754 cost 1.38 mk 0.5s -0.193 1s +0.184 2s +0.431
+train round3_a spread>=4: n 240 cost 2.84 mk 0.5s +0.656 1s +1.481 2s +2.265
+train round2_public spread=2: n 4198 cost 0.97 mk 0.5s -0.571 1s -0.603 2s -0.594
+train round2_public spread=3: n 472 cost 1.38 mk 0.5s -0.617 1s -0.503 2s -0.722
+train round2_public spread>=4: n 189 cost 2.51 mk 0.5s +0.209 1s +0.177 2s +0.190
+r3b round3_b spread=2: n 5825 cost 0.98 mk 0.5s -0.235 1s -0.050 2s +0.036
+r3b round3_b spread=3: n 901 cost 1.38 mk 0.5s -0.016 1s +0.241 2s +0.234
+r3b round3_b spread>=4: n 287 cost 2.88 mk 0.5s +0.772 1s +1.486 2s +2.172
+r2h2 round2_public spread=2: n 4555 cost 0.96 mk 0.5s -0.440 1s -0.413 2s -0.452
+r2h2 round2_public spread=3: n 768 cost 1.46 mk 0.5s -0.710 1s -0.850 2s -1.242
+r2h2 round2_public spread>=4: n 373 cost 3.00 mk 0.5s -1.090 1s -1.334 2s -1.558
+
+### rule: IOC in gap direction at the event the spread closes (spread 1 again)
+r3b: n 7013 cost 0.53 mk 0.5s +0.071 1s +0.287 2s +0.363
+r2h2: n 5696 cost 0.58 mk 0.5s -0.290 1s -0.269 2s -0.358
